@@ -11,7 +11,10 @@ Thumbs.db
 bin/
 dist/
 *.test
+*.exe
 coverage.out
+.gocache/
+.gomodcache/
 
 # Node / frontend
 node_modules/
