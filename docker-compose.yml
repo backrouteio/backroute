@@ -1,0 +1,11 @@
+services:
+  backroute-server:
+    build:
+      context: ./server
+    container_name: backroute-server
+    environment:
+      BACKROUTE_TOKEN: ${BACKROUTE_TOKEN:-dev-token}
+      BACKROUTE_ADDR: :8080
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

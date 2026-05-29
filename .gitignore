@@ -1,0 +1,24 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Go
+bin/
+dist/
+*.test
+coverage.out
+
+# Node / frontend
+node_modules/
+.env
+.env.*
+
+# Local runtime
+backroute-agent.yaml
+backroute-server.yaml
+data/
