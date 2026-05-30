@@ -44,3 +44,15 @@ Open the dashboard:
 ```text
 http://localhost:8080
 ```
+
+Test SSH through BackRoute:
+
+```powershell
+ssh -p 2222 your-linux-user@localhost
+```
+
+On a VPS, replace `localhost` with the VPS IP or domain:
+
+```bash
+ssh -p 2222 your-linux-user@76.13.211.64
+```
