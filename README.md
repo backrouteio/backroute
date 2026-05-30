@@ -56,3 +56,26 @@ On a VPS, replace `localhost` with the VPS IP or domain:
 ```bash
 ssh -p 2222 your-linux-user@76.13.211.64
 ```
+
+## Multiple SSH Routes
+
+The server can listen on multiple SSH ports and route each port to a different connected agent:
+
+```text
+2222 -> office-ubuntu-01 -> 127.0.0.1:22
+2223 -> home-linux-01    -> 127.0.0.1:22
+2224 -> lab-linux-01     -> 127.0.0.1:22
+```
+
+Configure routes with:
+
+```bash
+export BACKROUTE_SSH_ROUTES="2222:office-ubuntu-01:127.0.0.1:22,2223:home-linux-01:127.0.0.1:22"
+```
+
+Then connect with:
+
+```bash
+ssh -p 2222 user@76.13.211.64
+ssh -p 2223 user@76.13.211.64
+```

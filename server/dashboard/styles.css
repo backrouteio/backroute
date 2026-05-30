@@ -81,6 +81,12 @@ button {
   color: var(--muted);
 }
 
+.command {
+  margin-top: 10px;
+  font-family: "Cascadia Code", "Courier New", monospace;
+  color: var(--ink);
+}
+
 .status {
   align-self: center;
   border-radius: 999px;

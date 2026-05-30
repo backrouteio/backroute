@@ -6,10 +6,10 @@ services:
     environment:
       BACKROUTE_TOKEN: ${BACKROUTE_TOKEN:-dev-token}
       BACKROUTE_ADDR: :8080
-      BACKROUTE_SSH_ADDR: :2222
-      BACKROUTE_SSH_AGENT: ${BACKROUTE_SSH_AGENT:-office-ubuntu-01}
-      BACKROUTE_SSH_TARGET: ${BACKROUTE_SSH_TARGET:-127.0.0.1:22}
+      BACKROUTE_SSH_ROUTES: ${BACKROUTE_SSH_ROUTES:-2222:office-ubuntu-01:127.0.0.1:22,2223:home-linux-01:127.0.0.1:22,2224:lab-linux-01:127.0.0.1:22}
     ports:
       - "8080:8080"
       - "2222:2222"
+      - "2223:2223"
+      - "2224:2224"
     restart: unless-stopped

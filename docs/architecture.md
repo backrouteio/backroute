@@ -32,7 +32,7 @@ The MVP starts with a WebSocket control channel:
 - Server validates the token.
 - Agent sends heartbeat messages.
 - Server exposes connected agents via `/api/agents`.
-- Server listens on TCP `:2222` for SSH clients.
+- Server listens on configured SSH route ports such as `:2222`, `:2223`, and `:2224`.
 - SSH bytes are forwarded over the WebSocket to the selected agent.
 - Agent forwards SSH bytes to its local `127.0.0.1:22`.
 

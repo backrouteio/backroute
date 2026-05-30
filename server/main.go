@@ -3,11 +3,15 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,13 +26,20 @@ type agent struct {
 	Name     string    `json:"name"`
 	Online   bool      `json:"online"`
 	LastSeen time.Time `json:"lastSeen"`
+	SSH      *sshRoute `json:"ssh,omitempty"`
+}
+
+type sshRoute struct {
+	Port      int    `json:"port"`
+	AgentName string `json:"agentName"`
+	Target    string `json:"target"`
 }
 
 type message struct {
-	Type  string `json:"type"`
-	Name  string `json:"name,omitempty"`
-	Token string `json:"token,omitempty"`
-	Time  string `json:"time,omitempty"`
+	Type   string `json:"type"`
+	Name   string `json:"name,omitempty"`
+	Token  string `json:"token,omitempty"`
+	Time   string `json:"time,omitempty"`
 	Target string `json:"target,omitempty"`
 }
 
@@ -84,25 +95,30 @@ func (s *agentSession) writeTCP(payload []byte) {
 }
 
 type registry struct {
-	mu     sync.RWMutex
-	agents map[string]agent
+	mu       sync.RWMutex
+	agents   map[string]agent
 	sessions map[string]*agentSession
+	routes   map[string]sshRoute
 }
 
 func main() {
 	addr := getenv("BACKROUTE_ADDR", ":8080")
 	token := getenv("BACKROUTE_TOKEN", "dev-token")
-	sshAddr := getenv("BACKROUTE_SSH_ADDR", ":2222")
-	sshAgent := getenv("BACKROUTE_SSH_AGENT", "office-ubuntu-01")
-	sshTarget := getenv("BACKROUTE_SSH_TARGET", "127.0.0.1:22")
-	reg := &registry{agents: map[string]agent{}, sessions: map[string]*agentSession{}}
+	routes := mustParseSSHRoutes()
+	reg := &registry{
+		agents:   map[string]agent{},
+		sessions: map[string]*agentSession{},
+		routes:   routesByAgent(routes),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agent", handleAgent(reg, token))
 	mux.HandleFunc("/api/agents", handleAgents(reg))
 	mux.Handle("/", http.FileServer(http.FS(dashboardFS)))
 
-	go listenSSH(reg, sshAddr, sshAgent, sshTarget)
+	for _, route := range routes {
+		go listenSSH(reg, route)
+	}
 
 	log.Printf("BackRoute server listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -163,33 +179,34 @@ func handleAgent(reg *registry, expectedToken string) http.HandlerFunc {
 	}
 }
 
-func listenSSH(reg *registry, addr, agentName, target string) {
+func listenSSH(reg *registry, route sshRoute) {
+	addr := fmt.Sprintf(":%d", route.Port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Printf("ssh listener failed on %s: %v", addr, err)
 		return
 	}
-	log.Printf("BackRoute SSH tunnel listening on %s for agent %s -> %s", addr, agentName, target)
+	log.Printf("BackRoute SSH tunnel listening on %s for agent %s -> %s", addr, route.AgentName, route.Target)
 	for {
 		client, err := listener.Accept()
 		if err != nil {
 			log.Printf("ssh accept failed: %v", err)
 			continue
 		}
-		go handleSSHClient(reg, client, agentName, target)
+		go handleSSHClient(reg, client, route)
 	}
 }
 
-func handleSSHClient(reg *registry, client net.Conn, agentName, target string) {
-	session := reg.session(agentName)
+func handleSSHClient(reg *registry, client net.Conn, route sshRoute) {
+	session := reg.session(route.AgentName)
 	if session == nil {
-		log.Printf("ssh client rejected: agent %s is offline", agentName)
+		log.Printf("ssh client rejected: agent %s is offline", route.AgentName)
 		_ = client.Close()
 		return
 	}
 
 	session.setTCP(client)
-	if err := session.writeJSON(message{Type: "tcp_open", Target: target}); err != nil {
+	if err := session.writeJSON(message{Type: "tcp_open", Target: route.Target}); err != nil {
 		log.Printf("failed to open ssh tunnel: %v", err)
 		session.closeTCP()
 		return
@@ -257,8 +274,15 @@ func (r *registry) list() []agent {
 	defer r.mu.RUnlock()
 	items := make([]agent, 0, len(r.agents))
 	for _, a := range r.agents {
+		if route, ok := r.routes[a.ID]; ok {
+			routeCopy := route
+			a.SSH = &routeCopy
+		}
 		items = append(items, a)
 	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
 	return items
 }
 
@@ -273,4 +297,74 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func mustParseSSHRoutes() []sshRoute {
+	routes, err := parseSSHRoutes(os.Getenv("BACKROUTE_SSH_ROUTES"))
+	if err != nil {
+		log.Fatalf("invalid BACKROUTE_SSH_ROUTES: %v", err)
+	}
+	if len(routes) > 0 {
+		return routes
+	}
+
+	portValue := strings.TrimPrefix(getenv("BACKROUTE_SSH_ADDR", ":2222"), ":")
+	port, err := strconv.Atoi(portValue)
+	if err != nil {
+		log.Fatalf("invalid BACKROUTE_SSH_ADDR: %s", portValue)
+	}
+
+	return []sshRoute{{
+		Port:      port,
+		AgentName: getenv("BACKROUTE_SSH_AGENT", "office-ubuntu-01"),
+		Target:    getenv("BACKROUTE_SSH_TARGET", "127.0.0.1:22"),
+	}}
+}
+
+func parseSSHRoutes(value string) ([]sshRoute, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+
+	entries := strings.Split(value, ",")
+	routes := make([]sshRoute, 0, len(entries))
+	seenPorts := map[int]bool{}
+	for _, entry := range entries {
+		parts := strings.Split(strings.TrimSpace(entry), ":")
+		if len(parts) != 4 {
+			return nil, fmt.Errorf("route %q must use port:agent:host:targetPort", entry)
+		}
+
+		port, err := strconv.Atoi(parts[0])
+		if err != nil || port <= 0 || port > 65535 {
+			return nil, fmt.Errorf("route %q has invalid listen port", entry)
+		}
+		if seenPorts[port] {
+			return nil, fmt.Errorf("duplicate listen port %d", port)
+		}
+		seenPorts[port] = true
+
+		targetPort, err := strconv.Atoi(parts[3])
+		if err != nil || targetPort <= 0 || targetPort > 65535 {
+			return nil, fmt.Errorf("route %q has invalid target port", entry)
+		}
+		if parts[1] == "" || parts[2] == "" {
+			return nil, fmt.Errorf("route %q has empty agent or target host", entry)
+		}
+
+		routes = append(routes, sshRoute{
+			Port:      port,
+			AgentName: parts[1],
+			Target:    net.JoinHostPort(parts[2], parts[3]),
+		})
+	}
+	return routes, nil
+}
+
+func routesByAgent(routes []sshRoute) map[string]sshRoute {
+	byAgent := make(map[string]sshRoute, len(routes))
+	for _, route := range routes {
+		byAgent[route.AgentName] = route
+	}
+	return byAgent
 }
