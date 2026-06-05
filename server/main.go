@@ -114,6 +114,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agent", handleAgent(reg, token))
 	mux.HandleFunc("/api/agents", handleAgents(reg))
+	mux.HandleFunc("/api/agents/clear-offline", handleClearOfflineAgents(reg))
 	mux.Handle("/", http.FileServer(http.FS(dashboardFS)))
 
 	for _, route := range routes {
@@ -235,8 +236,25 @@ func handleSSHClient(reg *registry, client net.Conn, route sshRoute) {
 
 func handleAgents(reg *registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(reg.list())
+	}
+}
+
+func handleClearOfflineAgents(reg *registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		cleared := reg.clearOffline()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{"cleared": cleared})
 	}
 }
 
@@ -284,6 +302,21 @@ func (r *registry) list() []agent {
 		return items[i].Name < items[j].Name
 	})
 	return items
+}
+
+func (r *registry) clearOffline() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	cleared := 0
+	for id, a := range r.agents {
+		if a.Online {
+			continue
+		}
+		delete(r.agents, id)
+		cleared++
+	}
+	return cleared
 }
 
 func (r *registry) session(id string) *agentSession {

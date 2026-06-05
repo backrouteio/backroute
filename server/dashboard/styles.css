@@ -55,10 +55,31 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+.secondary {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.notice {
+  min-height: 24px;
+  margin: 18px 0 0;
+}
+
 .agents {
   display: grid;
   gap: 12px;
-  margin-top: 28px;
+  margin-top: 18px;
 }
 
 .card {

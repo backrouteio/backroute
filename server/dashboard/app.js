@@ -29,6 +29,29 @@ async function loadAgents() {
   }).join("");
 }
 
+async function clearOfflineAgents() {
+  const notice = document.querySelector("#notice");
+  const button = document.querySelector("#clear-offline");
+  button.disabled = true;
+  notice.textContent = "Clearing offline agents...";
+
+  try {
+    const response = await fetch("/api/agents/clear-offline", { method: "POST" });
+    if (!response.ok) {
+      throw new Error(`Request failed with ${response.status}`);
+    }
+    const result = await response.json();
+    notice.textContent = `Cleared ${result.cleared} offline agent${result.cleared === 1 ? "" : "s"}.`;
+    await loadAgents();
+  } catch (error) {
+    notice.textContent = "Could not clear offline agents.";
+    console.error(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 document.querySelector("#refresh").addEventListener("click", loadAgents);
+document.querySelector("#clear-offline").addEventListener("click", clearOfflineAgents);
 loadAgents();
 setInterval(loadAgents, 15000);

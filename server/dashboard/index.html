@@ -13,8 +13,12 @@
           <p>BackRoute</p>
           <h1>Agents</h1>
         </div>
-        <button id="refresh" type="button">Refresh</button>
+        <div class="actions">
+          <button id="clear-offline" class="secondary" type="button">Clear offline</button>
+          <button id="refresh" type="button">Refresh</button>
+        </div>
       </section>
+      <p id="notice" class="notice" aria-live="polite"></p>
       <section id="agents" class="agents"></section>
     </main>
     <script src="/dashboard/app.js"></script>
