@@ -15,10 +15,14 @@ async function loadConfig() {
 }
 
 function buildAgentCommand(agent, agentServer) {
-  return `sudo apt update
+  return `# 5.1 Install packages
+sudo apt update
+sudo apt upgrade -y
 sudo apt install -y git golang openssh-server
 sudo systemctl enable --now ssh
+sudo systemctl status ssh --no-pager
 
+# 5.2 Clone or update BackRoute
 cd ~
 if [ ! -d backroute ]; then
   git clone https://github.com/backrouteio/backroute.git
@@ -26,19 +30,26 @@ else
   cd backroute && git pull && cd ~
 fi
 
+# 5.3 Run agent manually
 cd ~/backroute/agent
 go run . \\
   -server ${agentServer} \\
   -token ${dashboardConfig.agentToken} \\
   -name ${agent.name} \\
-  -ssh-target ${agent.ssh.target}`;
+  -ssh-target ${agent.ssh.target}
+
+# Expected output:
+# connected to ${agentServer} as ${agent.name}
+# server message: auth_ok`;
 }
 
 function buildAutostartCommand(agent, agentServer) {
   const serviceName = `backroute-agent-${agent.name}`;
   return `sudo apt update
+sudo apt upgrade -y
 sudo apt install -y git golang openssh-server
 sudo systemctl enable --now ssh
+sudo systemctl status ssh --no-pager
 
 cd /root
 if [ ! -d /root/backroute ]; then
@@ -112,7 +123,7 @@ async function loadAgents() {
     const ssh = agent.ssh
       ? `
           <div class="connect">
-            <h3>Install and run agent now</h3>
+            <h3>Ubuntu installation steps</h3>
             <div class="command-block">
               <button class="copy" type="button" data-copy="${agentCommand}">Copy</button>
               <pre class="command"><code>${agentCommand}</code></pre>
