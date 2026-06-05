@@ -44,8 +44,8 @@ go run . \\
 }
 
 function buildAutostartCommand(agent, agentServer) {
-  const serviceName = `backroute-agent-${agent.name}`;
-  return `sudo apt update
+	const serviceName = `backroute-agent-${agent.name}`;
+	return `sudo apt update
 sudo apt upgrade -y
 sudo apt install -y git golang openssh-server
 sudo systemctl enable --now ssh
@@ -58,6 +58,10 @@ else
   cd /root/backroute && git pull
 fi
 
+cd /root/backroute/agent
+mkdir -p /root/backroute/bin /root/.cache/go-build /root/go
+GOCACHE=/root/.cache/go-build GOPATH=/root/go go build -o /root/backroute/bin/backroute-agent .
+
 sudo tee /etc/systemd/system/${serviceName}.service >/dev/null <<'EOF'
 [Unit]
 Description=BackRoute Agent ${agent.name}
@@ -66,8 +70,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/backroute/agent
-ExecStart=/usr/bin/go run . -server ${agentServer} -token ${dashboardConfig.agentToken} -name ${agent.name} -ssh-target ${agent.ssh.target}
+WorkingDirectory=/root/backroute
+ExecStart=/root/backroute/bin/backroute-agent -server ${agentServer} -token ${dashboardConfig.agentToken} -name ${agent.name} -ssh-target ${agent.ssh.target}
 Restart=always
 RestartSec=5
 
