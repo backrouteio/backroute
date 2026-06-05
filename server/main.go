@@ -475,10 +475,12 @@ func mustParseSSHRoutes() []sshRoute {
 		{Port: 2223, AgentName: "node-2", Target: "127.0.0.1:22"},
 		{Port: 2224, AgentName: "node-3", Target: "127.0.0.1:22"},
 		{Port: 2225, AgentName: "node-4", Target: "127.0.0.1:22"},
-		{Port: 2226, AgentName: "node-6", Target: "127.0.0.1:22"},
+		{Port: 2226, AgentName: "node-5", Target: "127.0.0.1:22"},
+		{Port: 2227, AgentName: "node-6", Target: "127.0.0.1:22"},
 		{Port: 2228, AgentName: "node-7", Target: "127.0.0.1:22"},
 		{Port: 2229, AgentName: "node-8", Target: "127.0.0.1:22"},
-		{Port: 2230, AgentName: "node-10", Target: "127.0.0.1:22"},
+		{Port: 2230, AgentName: "node-9", Target: "127.0.0.1:22"},
+		{Port: 2231, AgentName: "node-10", Target: "127.0.0.1:22"},
 	}
 }
 

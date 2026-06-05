@@ -62,15 +62,22 @@ ssh -p 2222 your-linux-user@76.13.211.64
 The server can listen on multiple SSH ports and route each port to a different connected agent:
 
 ```text
-2222 -> office-ubuntu-01 -> 127.0.0.1:22
-2223 -> home-linux-01    -> 127.0.0.1:22
-2224 -> lab-linux-01     -> 127.0.0.1:22
+2222 -> node-1  -> 127.0.0.1:22
+2223 -> node-2  -> 127.0.0.1:22
+2224 -> node-3  -> 127.0.0.1:22
+2225 -> node-4  -> 127.0.0.1:22
+2226 -> node-5  -> 127.0.0.1:22
+2227 -> node-6  -> 127.0.0.1:22
+2228 -> node-7  -> 127.0.0.1:22
+2229 -> node-8  -> 127.0.0.1:22
+2230 -> node-9  -> 127.0.0.1:22
+2231 -> node-10 -> 127.0.0.1:22
 ```
 
 Configure routes with:
 
 ```bash
-export BACKROUTE_SSH_ROUTES="2222:office-ubuntu-01:127.0.0.1:22,2223:home-linux-01:127.0.0.1:22"
+export BACKROUTE_SSH_ROUTES="2222:node-1:127.0.0.1:22,2223:node-2:127.0.0.1:22"
 ```
 
 Then connect with:
