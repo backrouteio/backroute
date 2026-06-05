@@ -10,8 +10,8 @@ The first version proves the core flow:
 2. Agent connects outbound to the BackRoute server.
 3. Server authenticates the agent with a token.
 4. Server tracks agent online/offline state.
-5. Dashboard shows connected agents.
-6. HTTP tunnel support is added next.
+5. Dashboard lets an admin create/delete node SSH routes.
+6. Dashboard shows connected agents and the exact test commands.
 
 ## Project Layout
 
@@ -57,35 +57,33 @@ On a VPS, replace `localhost` with the VPS IP or domain:
 ssh -p 2222 your-linux-user@76.13.211.64
 ```
 
-## Multiple SSH Routes
+## Portal Node Routes
 
-The server can listen on multiple SSH ports and route each port to a different connected agent:
+The dashboard creates SSH routes dynamically. When an admin creates `node-1`, the server assigns the next free port from the configured range and immediately starts listening on that port.
+
+Default dynamic port range:
 
 ```text
-2222 -> node-1  -> 127.0.0.1:22
-2223 -> node-2  -> 127.0.0.1:22
-2224 -> node-3  -> 127.0.0.1:22
-2225 -> node-4  -> 127.0.0.1:22
-2226 -> node-5  -> 127.0.0.1:22
-2227 -> node-6  -> 127.0.0.1:22
-2228 -> node-7  -> 127.0.0.1:22
-2229 -> node-8  -> 127.0.0.1:22
-2230 -> node-9  -> 127.0.0.1:22
-2231 -> node-10 -> 127.0.0.1:22
+2222-2999
 ```
 
-Configure routes with:
+Change it on the VPS with:
 
 ```bash
-export BACKROUTE_SSH_ROUTES="2222:node-1:127.0.0.1:22,2223:node-2:127.0.0.1:22"
+export BACKROUTE_PORT_START=2222
+export BACKROUTE_PORT_END=3999
 ```
 
-Then connect with:
+For Docker deployment on an Ubuntu VPS, BackRoute uses host networking so newly allocated ports are reachable without editing `docker-compose.yml` each time a node is added.
 
-```bash
-ssh -p 2222 user@76.13.211.64
-ssh -p 2223 user@76.13.211.64
-```
+Portal flow:
+
+1. Log in to the dashboard.
+2. Enter a node name such as `node-1`.
+3. Keep SSH target as `127.0.0.1:22` for normal Linux SSH.
+4. Click `Create node`.
+5. Copy the agent command shown by the portal to the remote Linux machine.
+6. Use the SSH command shown by the portal to connect through the VPS.
 
 ## Dashboard Login
 

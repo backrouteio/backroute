@@ -42,6 +42,16 @@ type sshRoute struct {
 	Target    string `json:"target"`
 }
 
+type createRouteRequest struct {
+	Name   string `json:"name"`
+	Target string `json:"target"`
+	Port   int    `json:"port"`
+}
+
+type routeResponse struct {
+	Route sshRoute `json:"route"`
+}
+
 type message struct {
 	Type   string `json:"type"`
 	Name   string `json:"name,omitempty"`
@@ -51,11 +61,11 @@ type message struct {
 }
 
 type agentSession struct {
-	name     string
-	conn     *websocket.Conn
-	writeMu  sync.Mutex
-	tcpMu    sync.Mutex
-	tcpConn  net.Conn
+	name    string
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+	tcpMu   sync.Mutex
+	tcpConn net.Conn
 }
 
 type geoIPResolver struct {
@@ -119,11 +129,19 @@ func (s *agentSession) writeTCP(payload []byte) {
 }
 
 type registry struct {
-	mu       sync.RWMutex
-	agents   map[string]agent
-	sessions map[string]*agentSession
-	routes   map[string]sshRoute
+	mu             sync.RWMutex
+	agents         map[string]agent
+	sessions       map[string]*agentSession
+	routes         map[string]sshRoute
+	routeListeners map[string]net.Listener
+	portStart      int
+	portEnd        int
 }
+
+const (
+	defaultDynamicPortStart = 2222
+	defaultDynamicPortEnd   = 2999
+)
 
 func main() {
 	addr := getenv("BACKROUTE_ADDR", ":8080")
@@ -132,17 +150,26 @@ func main() {
 	dashboardUser := os.Getenv("BACKROUTE_DASHBOARD_USER")
 	dashboardPassword := os.Getenv("BACKROUTE_DASHBOARD_PASSWORD")
 	geoIP := newGeoIPResolver(getenv("BACKROUTE_GEOIP_ENABLED", "true") == "true")
+	portStart := getenvInt("BACKROUTE_PORT_START", defaultDynamicPortStart)
+	portEnd := getenvInt("BACKROUTE_PORT_END", defaultDynamicPortEnd)
+	if portEnd < portStart {
+		log.Fatalf("invalid dynamic port range: BACKROUTE_PORT_END must be greater than or equal to BACKROUTE_PORT_START")
+	}
 	routes := mustParseSSHRoutes()
 	reg := &registry{
-		agents:   map[string]agent{},
-		sessions: map[string]*agentSession{},
-		routes:   routesByAgent(routes),
+		agents:         map[string]agent{},
+		sessions:       map[string]*agentSession{},
+		routes:         map[string]sshRoute{},
+		routeListeners: map[string]net.Listener{},
+		portStart:      portStart,
+		portEnd:        portEnd,
 	}
 
 	log.Printf("startup: BackRoute server booting")
 	log.Printf("startup: dashboard/API/agent HTTP address=%s", addr)
 	log.Printf("startup: debug logging=%v", debug)
 	log.Printf("startup: geoip lookup enabled=%v", geoIP.enabled)
+	log.Printf("startup: dynamic SSH port range=%d-%d", reg.portStart, reg.portEnd)
 	if dashboardUser != "" && dashboardPassword != "" {
 		log.Printf("startup: dashboard basic auth enabled user=%s", dashboardUser)
 	} else {
@@ -157,10 +184,14 @@ func main() {
 	mux.HandleFunc("/agent", handleAgent(reg, token, debug, geoIP))
 	mux.HandleFunc("/api/agents", requireBasicAuth(handleAgents(reg), dashboardUser, dashboardPassword))
 	mux.HandleFunc("/api/agents/clear-offline", requireBasicAuth(handleClearOfflineAgents(reg), dashboardUser, dashboardPassword))
+	mux.HandleFunc("/api/routes", requireBasicAuth(handleRoutes(reg), dashboardUser, dashboardPassword))
+	mux.HandleFunc("/api/routes/", requireBasicAuth(handleRouteByName(reg), dashboardUser, dashboardPassword))
 	mux.Handle("/", requireBasicAuth(http.FileServer(http.FS(dashboardFS)).ServeHTTP, dashboardUser, dashboardPassword))
 
 	for _, route := range routes {
-		go listenSSH(reg, route)
+		if err := reg.addRoute(route); err != nil {
+			log.Fatalf("failed to start configured SSH route agent=%s port=%d: %v", route.AgentName, route.Port, err)
+		}
 	}
 
 	log.Printf("BackRoute server listening on %s", addr)
@@ -269,19 +300,13 @@ func handleAgent(reg *registry, expectedToken string, debug bool, geoIP *geoIPRe
 	}
 }
 
-func listenSSH(reg *registry, route sshRoute) {
-	addr := fmt.Sprintf(":%d", route.Port)
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Printf("ssh listener failed on %s: %v", addr, err)
-		return
-	}
-	log.Printf("BackRoute SSH tunnel listening on %s for agent %s -> %s", addr, route.AgentName, route.Target)
+func serveSSHListener(reg *registry, listener net.Listener, route sshRoute) {
+	log.Printf("BackRoute SSH tunnel listening on :%d for agent %s -> %s", route.Port, route.AgentName, route.Target)
 	for {
 		client, err := listener.Accept()
 		if err != nil {
-			log.Printf("ssh accept failed: %v", err)
-			continue
+			log.Printf("ssh listener stopped port=%d agent=%s error=%v", route.Port, route.AgentName, err)
+			return
 		}
 		go handleSSHClient(reg, client, route)
 	}
@@ -353,6 +378,77 @@ func handleClearOfflineAgents(reg *registry) http.HandlerFunc {
 	}
 }
 
+func handleRoutes(reg *registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req createRouteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			http.Error(w, "node name is required", http.StatusBadRequest)
+			return
+		}
+
+		target := strings.TrimSpace(req.Target)
+		if target == "" {
+			target = "127.0.0.1:22"
+		}
+
+		port := req.Port
+		if port == 0 {
+			nextPort, err := reg.nextAvailablePort()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			port = nextPort
+		}
+
+		route := sshRoute{Port: port, AgentName: name, Target: target}
+		if err := reg.addRoute(route); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+
+		log.Printf("dashboard: created route agent=%s port=%d target=%s", route.AgentName, route.Port, route.Target)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(routeResponse{Route: route})
+	}
+}
+
+func handleRouteByName(reg *registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		name := strings.TrimPrefix(r.URL.Path, "/api/routes/")
+		name, err := url.PathUnescape(name)
+		if err != nil || strings.TrimSpace(name) == "" {
+			http.Error(w, "invalid route name", http.StatusBadRequest)
+			return
+		}
+
+		if !reg.deleteRoute(name) {
+			http.Error(w, "route not found", http.StatusNotFound)
+			return
+		}
+
+		log.Printf("dashboard: deleted route agent=%s", name)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (r *registry) set(a agent, session *agentSession) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -383,6 +479,75 @@ func (r *registry) offline(id string) {
 	delete(r.sessions, id)
 }
 
+func (r *registry) addRoute(route sshRoute) error {
+	if route.Port < 1 || route.Port > 65535 {
+		return fmt.Errorf("invalid SSH port %d", route.Port)
+	}
+	if strings.TrimSpace(route.AgentName) == "" {
+		return fmt.Errorf("node name is required")
+	}
+	if strings.TrimSpace(route.Target) == "" {
+		return fmt.Errorf("target is required")
+	}
+
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", route.Port))
+	if err != nil {
+		return fmt.Errorf("could not listen on port %d: %w", route.Port, err)
+	}
+
+	r.mu.Lock()
+	if _, exists := r.routes[route.AgentName]; exists {
+		r.mu.Unlock()
+		_ = listener.Close()
+		return fmt.Errorf("node %s already exists", route.AgentName)
+	}
+	if r.portInUseLocked(route.Port) {
+		r.mu.Unlock()
+		_ = listener.Close()
+		return fmt.Errorf("port %d is already assigned", route.Port)
+	}
+	r.routes[route.AgentName] = route
+	r.routeListeners[route.AgentName] = listener
+	r.mu.Unlock()
+
+	go serveSSHListener(r, listener, route)
+	return nil
+}
+
+func (r *registry) deleteRoute(name string) bool {
+	r.mu.Lock()
+	listener, exists := r.routeListeners[name]
+	delete(r.routeListeners, name)
+	delete(r.routes, name)
+	r.mu.Unlock()
+
+	if listener != nil {
+		_ = listener.Close()
+	}
+	return exists
+}
+
+func (r *registry) nextAvailablePort() (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	for port := r.portStart; port <= r.portEnd; port++ {
+		if !r.portInUseLocked(port) {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no free SSH ports available between %d and %d", r.portStart, r.portEnd)
+}
+
+func (r *registry) portInUseLocked(port int) bool {
+	for _, route := range r.routes {
+		if route.Port == port {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *registry) countOnline() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -399,16 +564,33 @@ func (r *registry) countOnline() int {
 func (r *registry) list() []agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	items := make([]agent, 0, len(r.agents))
-	for _, a := range r.agents {
+	items := make([]agent, 0, len(r.agents)+len(r.routes))
+	seen := map[string]bool{}
+
+	for name, route := range r.routes {
+		a, ok := r.agents[name]
+		if !ok {
+			a = agent{ID: name, Name: name, Online: false}
+		}
 		if a.Online {
 			a.ActiveFor = formatDuration(time.Since(a.ConnectedAt))
 		} else if a.ActiveFor == "" && !a.ConnectedAt.IsZero() {
 			a.ActiveFor = formatDuration(a.LastSeen.Sub(a.ConnectedAt))
 		}
-		if route, ok := r.routes[a.ID]; ok {
-			routeCopy := route
-			a.SSH = &routeCopy
+		routeCopy := route
+		a.SSH = &routeCopy
+		items = append(items, a)
+		seen[name] = true
+	}
+
+	for _, a := range r.agents {
+		if seen[a.ID] {
+			continue
+		}
+		if a.Online {
+			a.ActiveFor = formatDuration(time.Since(a.ConnectedAt))
+		} else if a.ActiveFor == "" && !a.ConnectedAt.IsZero() {
+			a.ActiveFor = formatDuration(a.LastSeen.Sub(a.ConnectedAt))
 		}
 		items = append(items, a)
 	}
@@ -446,6 +628,18 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+func getenvInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Fatalf("invalid %s: %s", key, value)
+	}
+	return parsed
+}
+
 func mustParseSSHRoutes() []sshRoute {
 	routes, err := parseSSHRoutes(os.Getenv("BACKROUTE_SSH_ROUTES"))
 	if err != nil {
@@ -470,18 +664,7 @@ func mustParseSSHRoutes() []sshRoute {
 		}}
 	}
 
-	return []sshRoute{
-		{Port: 2222, AgentName: "node-1", Target: "127.0.0.1:22"},
-		{Port: 2223, AgentName: "node-2", Target: "127.0.0.1:22"},
-		{Port: 2224, AgentName: "node-3", Target: "127.0.0.1:22"},
-		{Port: 2225, AgentName: "node-4", Target: "127.0.0.1:22"},
-		{Port: 2226, AgentName: "node-5", Target: "127.0.0.1:22"},
-		{Port: 2227, AgentName: "node-6", Target: "127.0.0.1:22"},
-		{Port: 2228, AgentName: "node-7", Target: "127.0.0.1:22"},
-		{Port: 2229, AgentName: "node-8", Target: "127.0.0.1:22"},
-		{Port: 2230, AgentName: "node-9", Target: "127.0.0.1:22"},
-		{Port: 2231, AgentName: "node-10", Target: "127.0.0.1:22"},
-	}
+	return nil
 }
 
 func parseSSHRoutes(value string) ([]sshRoute, error) {

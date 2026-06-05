@@ -18,6 +18,17 @@
           <button id="refresh" type="button">Refresh</button>
         </div>
       </section>
+      <form id="create-node" class="create-node">
+        <label>
+          Node name
+          <input id="node-name" name="name" autocomplete="off" placeholder="node-1" required />
+        </label>
+        <label>
+          SSH target
+          <input id="node-target" name="target" autocomplete="off" value="127.0.0.1:22" />
+        </label>
+        <button type="submit">Create node</button>
+      </form>
       <p id="notice" class="notice" aria-live="polite"></p>
       <section id="agents" class="agents"></section>
     </main>

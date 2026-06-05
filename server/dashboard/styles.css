@@ -6,6 +6,7 @@
   --line: #dce3eb;
   --good: #0f7a4f;
   --bad: #a13a2f;
+  --bad-bg: #ffece8;
 }
 
 * {
@@ -76,6 +77,38 @@ button:disabled {
   margin: 18px 0 0;
 }
 
+.create-node {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.create-node label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.create-node input {
+  min-width: 0;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 12px;
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
 .agents {
   display: grid;
   gap: 12px;
@@ -129,6 +162,28 @@ button:disabled {
   margin-top: 10px;
   font-family: "Cascadia Code", "Courier New", monospace;
   color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.connect {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.connect h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 12px;
 }
 
 .status {
@@ -145,7 +200,13 @@ button:disabled {
 }
 
 .offline {
-  background: #ffece8;
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.danger {
+  border: 1px solid #f0c7c0;
+  background: var(--bad-bg);
   color: var(--bad);
 }
 
@@ -159,12 +220,27 @@ button:disabled {
 
 @media (max-width: 760px) {
   .card,
-  .header {
+  .header,
+  .create-node {
     align-items: flex-start;
     flex-direction: column;
   }
 
+  .create-node {
+    display: flex;
+    width: 100%;
+  }
+
+  .create-node label,
+  .create-node button {
+    width: 100%;
+  }
+
   .meta {
     grid-template-columns: 1fr;
+  }
+
+  .card-actions {
+    align-items: flex-start;
   }
 }
