@@ -1,3 +1,5 @@
+let dashboardConfig = null;
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -7,7 +9,60 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+async function loadConfig() {
+  const response = await fetch("/api/config");
+  dashboardConfig = await response.json();
+}
+
+function buildAgentCommand(agent, agentServer) {
+  return `sudo apt update
+sudo apt install -y git golang openssh-server
+sudo systemctl enable --now ssh
+
+cd ~
+if [ ! -d backroute ]; then
+  git clone https://github.com/backrouteio/backroute.git
+else
+  cd backroute && git pull && cd ~
+fi
+
+cd ~/backroute/agent
+go run . \\
+  -server ${agentServer} \\
+  -token ${dashboardConfig.agentToken} \\
+  -name ${agent.name} \\
+  -ssh-target ${agent.ssh.target}`;
+}
+
+function buildAutostartCommand(agent, agentServer) {
+  const serviceName = `backroute-agent-${agent.name}`;
+  return `sudo tee /etc/systemd/system/${serviceName}.service >/dev/null <<'EOF'
+[Unit]
+Description=BackRoute Agent ${agent.name}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/backroute/agent
+ExecStart=/usr/bin/go run . -server ${agentServer} -token ${dashboardConfig.agentToken} -name ${agent.name} -ssh-target ${agent.ssh.target}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now ${serviceName}
+sudo systemctl status ${serviceName} --no-pager`;
+}
+
 async function loadAgents() {
+  if (!dashboardConfig) {
+    await loadConfig();
+  }
+
   const container = document.querySelector("#agents");
   container.innerHTML = "<div class='empty'>Loading agents...</div>";
 
@@ -32,13 +87,26 @@ async function loadAgents() {
     const activeFor = escapeHtml(agent.activeFor || "-");
     const host = window.location.hostname || "YOUR_VPS_IP";
     const agentServer = `${window.location.protocol === "https:" ? "wss" : "ws"}://${host}:8080/agent`;
+    const agentCommand = agent.ssh ? escapeHtml(buildAgentCommand(agent, agentServer)) : "";
+    const autostartCommand = agent.ssh ? escapeHtml(buildAutostartCommand(agent, agentServer)) : "";
     const ssh = agent.ssh
       ? `
           <div class="connect">
-            <h3>Connect this node agent</h3>
-            <p class="command">go run . -server ${escapeHtml(agentServer)} -token &lt;BACKROUTE_TOKEN&gt; -name ${escapeHtml(agent.name)} -ssh-target ${escapeHtml(agent.ssh.target)}</p>
+            <h3>Install and run agent now</h3>
+            <div class="command-block">
+              <button class="copy" type="button" data-copy="${agentCommand}">Copy</button>
+              <pre class="command"><code>${agentCommand}</code></pre>
+            </div>
+            <h3>Install Ubuntu autostart</h3>
+            <div class="command-block">
+              <button class="copy" type="button" data-copy="${autostartCommand}">Copy</button>
+              <pre class="command"><code>${autostartCommand}</code></pre>
+            </div>
             <h3>SSH through BackRoute</h3>
-            <p class="command">ssh -p ${agent.ssh.port} user@${escapeHtml(host)}</p>
+            <div class="command-block">
+              <button class="copy" type="button" data-copy="ssh -p ${agent.ssh.port} user@${escapeHtml(host)}">Copy</button>
+              <pre class="command"><code>ssh -p ${agent.ssh.port} user@${escapeHtml(host)}</code></pre>
+            </div>
           </div>
         `
       : "<p>No SSH route configured</p>";
@@ -143,10 +211,29 @@ async function deleteNode(name) {
   }
 }
 
+async function copyCommand(button) {
+  const notice = document.querySelector("#notice");
+  const command = button.dataset.copy;
+
+  try {
+    await navigator.clipboard.writeText(command);
+    notice.textContent = "Command copied.";
+  } catch (error) {
+    notice.textContent = "Could not copy command. Select the text manually.";
+    console.error(error);
+  }
+}
+
 document.querySelector("#refresh").addEventListener("click", loadAgents);
 document.querySelector("#clear-offline").addEventListener("click", clearOfflineAgents);
 document.querySelector("#create-node").addEventListener("submit", createNode);
 document.querySelector("#agents").addEventListener("click", (event) => {
+  const copyButton = event.target.closest("[data-copy]");
+  if (copyButton) {
+    copyCommand(copyButton);
+    return;
+  }
+
   const button = event.target.closest("[data-route-delete]");
   if (!button) {
     return;

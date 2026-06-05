@@ -178,6 +178,31 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.command-block {
+  position: relative;
+}
+
+.command-block .command {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8fafc;
+  white-space: pre-wrap;
+}
+
+.copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 7px 10px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
 .card-actions {
   display: flex;
   flex-direction: column;

@@ -52,6 +52,12 @@ type routeResponse struct {
 	Route sshRoute `json:"route"`
 }
 
+type dashboardConfig struct {
+	AgentToken string `json:"agentToken"`
+	PortStart  int    `json:"portStart"`
+	PortEnd    int    `json:"portEnd"`
+}
+
 type message struct {
 	Type   string `json:"type"`
 	Name   string `json:"name,omitempty"`
@@ -182,6 +188,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agent", handleAgent(reg, token, debug, geoIP))
+	mux.HandleFunc("/api/config", requireBasicAuth(handleConfig(reg, token), dashboardUser, dashboardPassword))
 	mux.HandleFunc("/api/agents", requireBasicAuth(handleAgents(reg), dashboardUser, dashboardPassword))
 	mux.HandleFunc("/api/agents/clear-offline", requireBasicAuth(handleClearOfflineAgents(reg), dashboardUser, dashboardPassword))
 	mux.HandleFunc("/api/routes", requireBasicAuth(handleRoutes(reg), dashboardUser, dashboardPassword))
@@ -361,6 +368,22 @@ func handleAgents(reg *registry) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(reg.list())
+	}
+}
+
+func handleConfig(reg *registry, token string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(dashboardConfig{
+			AgentToken: token,
+			PortStart:  reg.portStart,
+			PortEnd:    reg.portEnd,
+		})
 	}
 }
 
