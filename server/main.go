@@ -104,6 +104,7 @@ type registry struct {
 func main() {
 	addr := getenv("BACKROUTE_ADDR", ":8080")
 	token := getenv("BACKROUTE_TOKEN", "dev-token")
+	debug := getenv("BACKROUTE_DEBUG", "false") == "true"
 	routes := mustParseSSHRoutes()
 	reg := &registry{
 		agents:   map[string]agent{},
@@ -111,8 +112,16 @@ func main() {
 		routes:   routesByAgent(routes),
 	}
 
+	log.Printf("startup: BackRoute server booting")
+	log.Printf("startup: dashboard/API/agent HTTP address=%s", addr)
+	log.Printf("startup: debug logging=%v", debug)
+	log.Printf("startup: configured SSH routes=%d", len(routes))
+	for _, route := range routes {
+		log.Printf("startup: route port=%d agent=%s target=%s", route.Port, route.AgentName, route.Target)
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/agent", handleAgent(reg, token))
+	mux.HandleFunc("/agent", handleAgent(reg, token, debug))
 	mux.HandleFunc("/api/agents", handleAgents(reg))
 	mux.HandleFunc("/api/agents/clear-offline", handleClearOfflineAgents(reg))
 	mux.Handle("/", http.FileServer(http.FS(dashboardFS)))
@@ -127,23 +136,27 @@ func main() {
 	}
 }
 
-func handleAgent(reg *registry, expectedToken string) http.HandlerFunc {
+func handleAgent(reg *registry, expectedToken string, debug bool) http.HandlerFunc {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		remote := r.RemoteAddr
+		log.Printf("agent: websocket connection attempt remote=%s", remote)
+
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Printf("upgrade failed: %v", err)
+			log.Printf("agent: websocket upgrade failed remote=%s error=%v", remote, err)
 			return
 		}
 		defer conn.Close()
 
 		var auth message
 		if err := conn.ReadJSON(&auth); err != nil {
-			log.Printf("auth read failed: %v", err)
+			log.Printf("agent: auth read failed remote=%s error=%v", remote, err)
 			return
 		}
 		if auth.Type != "auth" || auth.Token != expectedToken || auth.Name == "" {
+			log.Printf("agent: auth failed remote=%s name=%q type=%q token_match=%v", remote, auth.Name, auth.Type, auth.Token == expectedToken)
 			_ = conn.WriteJSON(message{Type: "auth_failed"})
 			return
 		}
@@ -154,27 +167,37 @@ func handleAgent(reg *registry, expectedToken string) http.HandlerFunc {
 		defer reg.offline(id)
 
 		_ = session.writeJSON(message{Type: "auth_ok"})
-		log.Printf("agent online: %s", id)
+		log.Printf("agent: auth ok name=%s remote=%s", id, remote)
+		log.Printf("agent: online name=%s active_agents=%d", id, reg.countOnline())
 
 		for {
 			messageType, payload, err := conn.ReadMessage()
 			if err != nil {
-				log.Printf("agent offline: %s: %v", id, err)
+				log.Printf("agent: disconnected name=%s remote=%s error=%v", id, remote, err)
 				return
 			}
 			if messageType == websocket.BinaryMessage {
+				if debug {
+					log.Printf("agent: binary payload name=%s bytes=%d direction=agent_to_ssh_client", id, len(payload))
+				}
 				session.writeTCP(payload)
 				continue
 			}
 			var msg message
 			if err := json.Unmarshal(payload, &msg); err != nil {
-				log.Printf("agent message parse failed: %v", err)
+				log.Printf("agent: message parse failed name=%s error=%v", id, err)
 				continue
 			}
 			if msg.Type == "heartbeat" {
 				reg.touch(id)
+				if debug {
+					log.Printf("agent: heartbeat name=%s time=%s", id, msg.Time)
+				}
 			} else if msg.Type == "tcp_close" {
+				log.Printf("tunnel: close requested by agent name=%s", id)
 				session.closeTCP()
+			} else {
+				log.Printf("agent: unhandled message name=%s type=%s", id, msg.Type)
 			}
 		}
 	}
@@ -199,36 +222,41 @@ func listenSSH(reg *registry, route sshRoute) {
 }
 
 func handleSSHClient(reg *registry, client net.Conn, route sshRoute) {
+	remote := client.RemoteAddr()
+	log.Printf("ssh: client connected remote=%s public_port=%d route_agent=%s target=%s", remote, route.Port, route.AgentName, route.Target)
+
 	session := reg.session(route.AgentName)
 	if session == nil {
-		log.Printf("ssh client rejected: agent %s is offline", route.AgentName)
+		log.Printf("ssh: rejected remote=%s reason=agent_offline agent=%s", remote, route.AgentName)
 		_ = client.Close()
 		return
 	}
 
 	session.setTCP(client)
 	if err := session.writeJSON(message{Type: "tcp_open", Target: route.Target}); err != nil {
-		log.Printf("failed to open ssh tunnel: %v", err)
+		log.Printf("ssh: failed to send tcp_open remote=%s agent=%s target=%s error=%v", remote, route.AgentName, route.Target, err)
 		session.closeTCP()
 		return
 	}
+	log.Printf("tunnel: opened remote=%s public_port=%d agent=%s target=%s", remote, route.Port, route.AgentName, route.Target)
 
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := client.Read(buf)
 		if n > 0 {
 			if writeErr := session.writeBinary(buf[:n]); writeErr != nil {
-				log.Printf("agent write failed: %v", writeErr)
+				log.Printf("tunnel: write to agent failed remote=%s agent=%s bytes=%d error=%v", remote, route.AgentName, n, writeErr)
 				session.closeTCP()
 				return
 			}
 		}
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("ssh client read failed: %v", err)
+				log.Printf("ssh: client read failed remote=%s error=%v", remote, err)
 			}
 			_ = session.writeJSON(message{Type: "tcp_close"})
 			session.closeTCP()
+			log.Printf("tunnel: closed remote=%s public_port=%d agent=%s", remote, route.Port, route.AgentName)
 			return
 		}
 	}
@@ -253,6 +281,7 @@ func handleClearOfflineAgents(reg *registry) http.HandlerFunc {
 		}
 
 		cleared := reg.clearOffline()
+		log.Printf("dashboard: cleared offline agents count=%d", cleared)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]int{"cleared": cleared})
 	}
@@ -285,6 +314,19 @@ func (r *registry) offline(id string) {
 		session.closeTCP()
 	}
 	delete(r.sessions, id)
+}
+
+func (r *registry) countOnline() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for _, a := range r.agents {
+		if a.Online {
+			count++
+		}
+	}
+	return count
 }
 
 func (r *registry) list() []agent {
