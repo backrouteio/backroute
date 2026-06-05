@@ -91,3 +91,14 @@ docker compose up -d --build
 ```
 
 The agent WebSocket endpoint `/agent` is still protected separately by `BACKROUTE_TOKEN`.
+
+## GeoIP Location
+
+BackRoute can look up approximate public IP location for connected agents using the external `ip-api.com` JSON API:
+
+```bash
+export BACKROUTE_GEOIP_ENABLED=true
+docker compose up -d --build
+```
+
+Private and loopback addresses are not sent to the external API. They are shown as local labels such as `Private network` or `Loopback`.

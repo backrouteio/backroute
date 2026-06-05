@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -54,6 +56,23 @@ type agentSession struct {
 	writeMu  sync.Mutex
 	tcpMu    sync.Mutex
 	tcpConn  net.Conn
+}
+
+type geoIPResolver struct {
+	enabled bool
+	client  *http.Client
+	mu      sync.RWMutex
+	cache   map[string]string
+}
+
+type geoIPResponse struct {
+	Status     string `json:"status"`
+	Message    string `json:"message"`
+	Country    string `json:"country"`
+	RegionName string `json:"regionName"`
+	City       string `json:"city"`
+	ISP        string `json:"isp"`
+	Query      string `json:"query"`
 }
 
 func (s *agentSession) writeJSON(v any) error {
@@ -112,6 +131,7 @@ func main() {
 	debug := getenv("BACKROUTE_DEBUG", "false") == "true"
 	dashboardUser := os.Getenv("BACKROUTE_DASHBOARD_USER")
 	dashboardPassword := os.Getenv("BACKROUTE_DASHBOARD_PASSWORD")
+	geoIP := newGeoIPResolver(getenv("BACKROUTE_GEOIP_ENABLED", "true") == "true")
 	routes := mustParseSSHRoutes()
 	reg := &registry{
 		agents:   map[string]agent{},
@@ -122,6 +142,7 @@ func main() {
 	log.Printf("startup: BackRoute server booting")
 	log.Printf("startup: dashboard/API/agent HTTP address=%s", addr)
 	log.Printf("startup: debug logging=%v", debug)
+	log.Printf("startup: geoip lookup enabled=%v", geoIP.enabled)
 	if dashboardUser != "" && dashboardPassword != "" {
 		log.Printf("startup: dashboard basic auth enabled user=%s", dashboardUser)
 	} else {
@@ -133,7 +154,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/agent", handleAgent(reg, token, debug))
+	mux.HandleFunc("/agent", handleAgent(reg, token, debug, geoIP))
 	mux.HandleFunc("/api/agents", requireBasicAuth(handleAgents(reg), dashboardUser, dashboardPassword))
 	mux.HandleFunc("/api/agents/clear-offline", requireBasicAuth(handleClearOfflineAgents(reg), dashboardUser, dashboardPassword))
 	mux.Handle("/", requireBasicAuth(http.FileServer(http.FS(dashboardFS)).ServeHTTP, dashboardUser, dashboardPassword))
@@ -170,7 +191,7 @@ func secureEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-func handleAgent(reg *registry, expectedToken string, debug bool) http.HandlerFunc {
+func handleAgent(reg *registry, expectedToken string, debug bool, geoIP *geoIPResolver) http.HandlerFunc {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -198,20 +219,21 @@ func handleAgent(reg *registry, expectedToken string, debug bool) http.HandlerFu
 		id := auth.Name
 		now := time.Now().UTC()
 		sourceIP := sourceIPFromRemote(remote)
+		location := geoIP.lookup(r.Context(), sourceIP)
 		session := &agentSession{name: id, conn: conn}
 		reg.set(agent{
 			ID:          id,
 			Name:        auth.Name,
 			Online:      true,
 			SourceIP:    sourceIP,
-			Location:    locationLabel(sourceIP),
+			Location:    location,
 			ConnectedAt: now,
 			LastSeen:    now,
 		}, session)
 		defer reg.offline(id)
 
 		_ = session.writeJSON(message{Type: "auth_ok"})
-		log.Printf("agent: auth ok name=%s remote=%s source_ip=%s location=%q", id, remote, sourceIP, locationLabel(sourceIP))
+		log.Printf("agent: auth ok name=%s remote=%s source_ip=%s location=%q", id, remote, sourceIP, location)
 		log.Printf("agent: online name=%s active_agents=%d", id, reg.countOnline())
 
 		for {
@@ -528,6 +550,89 @@ func locationLabel(ipText string) string {
 		return "Private network"
 	}
 	return "Public IP - GeoIP not configured"
+}
+
+func newGeoIPResolver(enabled bool) *geoIPResolver {
+	return &geoIPResolver{
+		enabled: enabled,
+		client:  &http.Client{Timeout: 3 * time.Second},
+		cache:   map[string]string{},
+	}
+}
+
+func (r *geoIPResolver) lookup(parent context.Context, ipText string) string {
+	ip := net.ParseIP(ipText)
+	if ip == nil {
+		return "Unknown"
+	}
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return locationLabel(ipText)
+	}
+	if !r.enabled {
+		return "Public IP - GeoIP disabled"
+	}
+
+	r.mu.RLock()
+	if cached, ok := r.cache[ipText]; ok {
+		r.mu.RUnlock()
+		return cached
+	}
+	r.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer cancel()
+
+	endpoint := "http://ip-api.com/json/" + url.PathEscape(ipText) + "?fields=status,message,country,regionName,city,isp,query"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "Public IP - GeoIP request failed"
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		log.Printf("geoip: lookup failed ip=%s error=%v", ipText, err)
+		return "Public IP - GeoIP lookup failed"
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("geoip: lookup failed ip=%s status=%d", ipText, resp.StatusCode)
+		return "Public IP - GeoIP unavailable"
+	}
+
+	var data geoIPResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		log.Printf("geoip: decode failed ip=%s error=%v", ipText, err)
+		return "Public IP - GeoIP decode failed"
+	}
+	if data.Status != "success" {
+		log.Printf("geoip: lookup returned failure ip=%s message=%s", ipText, data.Message)
+		return "Public IP - GeoIP unknown"
+	}
+
+	location := formatGeoIPLocation(data)
+	r.mu.Lock()
+	r.cache[ipText] = location
+	r.mu.Unlock()
+	log.Printf("geoip: lookup ok ip=%s location=%q", ipText, location)
+	return location
+}
+
+func formatGeoIPLocation(data geoIPResponse) string {
+	parts := make([]string, 0, 4)
+	for _, value := range []string{data.City, data.RegionName, data.Country} {
+		if strings.TrimSpace(value) != "" {
+			parts = append(parts, value)
+		}
+	}
+	location := strings.Join(parts, ", ")
+	if location == "" {
+		location = "Public IP"
+	}
+	if strings.TrimSpace(data.ISP) != "" {
+		location += " - " + data.ISP
+	}
+	return location
 }
 
 func formatDuration(duration time.Duration) string {

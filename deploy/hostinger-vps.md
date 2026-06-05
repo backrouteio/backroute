@@ -18,6 +18,7 @@ cd backroute
 export BACKROUTE_TOKEN="replace-with-a-strong-token"
 export BACKROUTE_DASHBOARD_USER="br_admin_ops_2026"
 export BACKROUTE_DASHBOARD_PASSWORD="replace-with-a-strong-dashboard-password"
+export BACKROUTE_GEOIP_ENABLED=true
 docker compose up -d --build
 ```
 
