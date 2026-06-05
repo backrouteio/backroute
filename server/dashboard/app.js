@@ -13,14 +13,25 @@ async function loadAgents() {
   container.innerHTML = agents.map((agent) => {
     const status = agent.online ? "online" : "offline";
     const lastSeen = new Date(agent.lastSeen).toLocaleString();
+    const connectedAt = agent.connectedAt ? new Date(agent.connectedAt).toLocaleString() : "-";
+    const sourceIp = agent.sourceIp || "-";
+    const location = agent.location || "Unknown";
+    const activeFor = agent.activeFor || "-";
+    const host = window.location.hostname || "YOUR_VPS_IP";
     const ssh = agent.ssh
-      ? `<p class="command">ssh -p ${agent.ssh.port} user@YOUR_VPS_IP</p>`
+      ? `<p class="command">ssh -p ${agent.ssh.port} user@${host}</p>`
       : "<p>No SSH route configured</p>";
     return `
       <article class="card">
         <div>
           <h2>${agent.name}</h2>
-          <p>Last seen: ${lastSeen}</p>
+          <dl class="meta">
+            <div><dt>Source IP</dt><dd>${sourceIp}</dd></div>
+            <div><dt>Location</dt><dd>${location}</dd></div>
+            <div><dt>Connected</dt><dd>${connectedAt}</dd></div>
+            <div><dt>Last seen</dt><dd>${lastSeen}</dd></div>
+            <div><dt>Active for</dt><dd>${activeFor}</dd></div>
+          </dl>
           ${ssh}
         </div>
         <span class="status ${status}">${status}</span>

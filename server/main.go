@@ -22,11 +22,15 @@ import (
 var dashboardFS embed.FS
 
 type agent struct {
-	ID       string    `json:"id"`
-	Name     string    `json:"name"`
-	Online   bool      `json:"online"`
-	LastSeen time.Time `json:"lastSeen"`
-	SSH      *sshRoute `json:"ssh,omitempty"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Online      bool      `json:"online"`
+	SourceIP    string    `json:"sourceIp"`
+	Location    string    `json:"location"`
+	ConnectedAt time.Time `json:"connectedAt"`
+	LastSeen    time.Time `json:"lastSeen"`
+	ActiveFor   string    `json:"activeFor"`
+	SSH         *sshRoute `json:"ssh,omitempty"`
 }
 
 type sshRoute struct {
@@ -162,12 +166,22 @@ func handleAgent(reg *registry, expectedToken string, debug bool) http.HandlerFu
 		}
 
 		id := auth.Name
+		now := time.Now().UTC()
+		sourceIP := sourceIPFromRemote(remote)
 		session := &agentSession{name: id, conn: conn}
-		reg.set(agent{ID: id, Name: auth.Name, Online: true, LastSeen: time.Now().UTC()}, session)
+		reg.set(agent{
+			ID:          id,
+			Name:        auth.Name,
+			Online:      true,
+			SourceIP:    sourceIP,
+			Location:    locationLabel(sourceIP),
+			ConnectedAt: now,
+			LastSeen:    now,
+		}, session)
 		defer reg.offline(id)
 
 		_ = session.writeJSON(message{Type: "auth_ok"})
-		log.Printf("agent: auth ok name=%s remote=%s", id, remote)
+		log.Printf("agent: auth ok name=%s remote=%s source_ip=%s location=%q", id, remote, sourceIP, locationLabel(sourceIP))
 		log.Printf("agent: online name=%s active_agents=%d", id, reg.countOnline())
 
 		for {
@@ -309,6 +323,7 @@ func (r *registry) offline(id string) {
 	a := r.agents[id]
 	a.Online = false
 	a.LastSeen = time.Now().UTC()
+	a.ActiveFor = formatDuration(a.LastSeen.Sub(a.ConnectedAt))
 	r.agents[id] = a
 	if session := r.sessions[id]; session != nil {
 		session.closeTCP()
@@ -334,6 +349,11 @@ func (r *registry) list() []agent {
 	defer r.mu.RUnlock()
 	items := make([]agent, 0, len(r.agents))
 	for _, a := range r.agents {
+		if a.Online {
+			a.ActiveFor = formatDuration(time.Since(a.ConnectedAt))
+		} else if a.ActiveFor == "" && !a.ConnectedAt.IsZero() {
+			a.ActiveFor = formatDuration(a.LastSeen.Sub(a.ConnectedAt))
+		}
 		if route, ok := r.routes[a.ID]; ok {
 			routeCopy := route
 			a.SSH = &routeCopy
@@ -389,11 +409,25 @@ func mustParseSSHRoutes() []sshRoute {
 		log.Fatalf("invalid BACKROUTE_SSH_ADDR: %s", portValue)
 	}
 
-	return []sshRoute{{
-		Port:      port,
-		AgentName: getenv("BACKROUTE_SSH_AGENT", "office-ubuntu-01"),
-		Target:    getenv("BACKROUTE_SSH_TARGET", "127.0.0.1:22"),
-	}}
+	agentName := getenv("BACKROUTE_SSH_AGENT", "")
+	if agentName != "" {
+		return []sshRoute{{
+			Port:      port,
+			AgentName: agentName,
+			Target:    getenv("BACKROUTE_SSH_TARGET", "127.0.0.1:22"),
+		}}
+	}
+
+	return []sshRoute{
+		{Port: 2222, AgentName: "node-1", Target: "127.0.0.1:22"},
+		{Port: 2223, AgentName: "node-2", Target: "127.0.0.1:22"},
+		{Port: 2224, AgentName: "node-3", Target: "127.0.0.1:22"},
+		{Port: 2225, AgentName: "node-4", Target: "127.0.0.1:22"},
+		{Port: 2226, AgentName: "node-6", Target: "127.0.0.1:22"},
+		{Port: 2228, AgentName: "node-7", Target: "127.0.0.1:22"},
+		{Port: 2229, AgentName: "node-8", Target: "127.0.0.1:22"},
+		{Port: 2230, AgentName: "node-10", Target: "127.0.0.1:22"},
+	}
 }
 
 func parseSSHRoutes(value string) ([]sshRoute, error) {
@@ -442,4 +476,50 @@ func routesByAgent(routes []sshRoute) map[string]sshRoute {
 		byAgent[route.AgentName] = route
 	}
 	return byAgent
+}
+
+func sourceIPFromRemote(remote string) string {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return remote
+	}
+	return host
+}
+
+func locationLabel(ipText string) string {
+	ip := net.ParseIP(ipText)
+	if ip == nil {
+		return "Unknown"
+	}
+	if ip.IsLoopback() {
+		return "Loopback"
+	}
+	if ip.IsPrivate() {
+		return "Private network"
+	}
+	return "Public IP - GeoIP not configured"
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration < 0 {
+		duration = 0
+	}
+	seconds := int64(duration.Seconds())
+	days := seconds / 86400
+	seconds %= 86400
+	hours := seconds / 3600
+	seconds %= 3600
+	minutes := seconds / 60
+	seconds %= 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }

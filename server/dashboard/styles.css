@@ -102,6 +102,29 @@ button:disabled {
   color: var(--muted);
 }
 
+.meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 8px 22px;
+  margin: 8px 0 0;
+}
+
+.meta div {
+  min-width: 0;
+}
+
+.meta dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.meta dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .command {
   margin-top: 10px;
   font-family: "Cascadia Code", "Courier New", monospace;
@@ -132,4 +155,16 @@ button:disabled {
   border-radius: 8px;
   background: white;
   color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .card,
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .meta {
+    grid-template-columns: 1fr;
+  }
 }
