@@ -16,6 +16,8 @@ sudo systemctl enable --now docker
 git clone https://github.com/backrouteio/backroute.git
 cd backroute
 export BACKROUTE_TOKEN="replace-with-a-strong-token"
+export BACKROUTE_DASHBOARD_USER="br_admin_ops_2026"
+export BACKROUTE_DASHBOARD_PASSWORD="replace-with-a-strong-dashboard-password"
 docker compose up -d --build
 ```
 

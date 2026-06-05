@@ -79,3 +79,15 @@ Then connect with:
 ssh -p 2222 user@76.13.211.64
 ssh -p 2223 user@76.13.211.64
 ```
+
+## Dashboard Login
+
+Protect the dashboard and dashboard API with HTTP Basic Auth:
+
+```bash
+export BACKROUTE_DASHBOARD_USER="br_admin_ops_2026"
+export BACKROUTE_DASHBOARD_PASSWORD="change-this-password"
+docker compose up -d --build
+```
+
+The agent WebSocket endpoint `/agent` is still protected separately by `BACKROUTE_TOKEN`.

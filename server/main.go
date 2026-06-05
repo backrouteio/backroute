@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -109,6 +110,8 @@ func main() {
 	addr := getenv("BACKROUTE_ADDR", ":8080")
 	token := getenv("BACKROUTE_TOKEN", "dev-token")
 	debug := getenv("BACKROUTE_DEBUG", "false") == "true"
+	dashboardUser := os.Getenv("BACKROUTE_DASHBOARD_USER")
+	dashboardPassword := os.Getenv("BACKROUTE_DASHBOARD_PASSWORD")
 	routes := mustParseSSHRoutes()
 	reg := &registry{
 		agents:   map[string]agent{},
@@ -119,6 +122,11 @@ func main() {
 	log.Printf("startup: BackRoute server booting")
 	log.Printf("startup: dashboard/API/agent HTTP address=%s", addr)
 	log.Printf("startup: debug logging=%v", debug)
+	if dashboardUser != "" && dashboardPassword != "" {
+		log.Printf("startup: dashboard basic auth enabled user=%s", dashboardUser)
+	} else {
+		log.Printf("startup: dashboard basic auth disabled; set BACKROUTE_DASHBOARD_USER and BACKROUTE_DASHBOARD_PASSWORD to protect the portal")
+	}
 	log.Printf("startup: configured SSH routes=%d", len(routes))
 	for _, route := range routes {
 		log.Printf("startup: route port=%d agent=%s target=%s", route.Port, route.AgentName, route.Target)
@@ -126,9 +134,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agent", handleAgent(reg, token, debug))
-	mux.HandleFunc("/api/agents", handleAgents(reg))
-	mux.HandleFunc("/api/agents/clear-offline", handleClearOfflineAgents(reg))
-	mux.Handle("/", http.FileServer(http.FS(dashboardFS)))
+	mux.HandleFunc("/api/agents", requireBasicAuth(handleAgents(reg), dashboardUser, dashboardPassword))
+	mux.HandleFunc("/api/agents/clear-offline", requireBasicAuth(handleClearOfflineAgents(reg), dashboardUser, dashboardPassword))
+	mux.Handle("/", requireBasicAuth(http.FileServer(http.FS(dashboardFS)).ServeHTTP, dashboardUser, dashboardPassword))
 
 	for _, route := range routes {
 		go listenSSH(reg, route)
@@ -138,6 +146,28 @@ func main() {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func requireBasicAuth(next http.HandlerFunc, expectedUser, expectedPassword string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if expectedUser == "" || expectedPassword == "" {
+			next(w, r)
+			return
+		}
+
+		user, password, ok := r.BasicAuth()
+		if !ok || !secureEqual(user, expectedUser) || !secureEqual(password, expectedPassword) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="BackRoute Dashboard"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
+func secureEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func handleAgent(reg *registry, expectedToken string, debug bool) http.HandlerFunc {
