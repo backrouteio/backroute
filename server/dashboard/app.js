@@ -36,7 +36,18 @@ go run . \\
 
 function buildAutostartCommand(agent, agentServer) {
   const serviceName = `backroute-agent-${agent.name}`;
-  return `sudo tee /etc/systemd/system/${serviceName}.service >/dev/null <<'EOF'
+  return `sudo apt update
+sudo apt install -y git golang openssh-server
+sudo systemctl enable --now ssh
+
+cd /root
+if [ ! -d /root/backroute ]; then
+  git clone https://github.com/backrouteio/backroute.git /root/backroute
+else
+  cd /root/backroute && git pull
+fi
+
+sudo tee /etc/systemd/system/${serviceName}.service >/dev/null <<'EOF'
 [Unit]
 Description=BackRoute Agent ${agent.name}
 After=network-online.target
@@ -55,7 +66,15 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now ${serviceName}
-sudo systemctl status ${serviceName} --no-pager`;
+sudo systemctl status ${serviceName} --no-pager
+sudo journalctl -u ${serviceName} -f`;
+}
+
+function buildStopAutostartCommand(agent) {
+  const serviceName = `backroute-agent-${agent.name}`;
+  return `sudo systemctl disable --now ${serviceName}
+sudo rm -f /etc/systemd/system/${serviceName}.service
+sudo systemctl daemon-reload`;
 }
 
 async function loadAgents() {
@@ -89,6 +108,7 @@ async function loadAgents() {
     const agentServer = `${window.location.protocol === "https:" ? "wss" : "ws"}://${host}:8080/agent`;
     const agentCommand = agent.ssh ? escapeHtml(buildAgentCommand(agent, agentServer)) : "";
     const autostartCommand = agent.ssh ? escapeHtml(buildAutostartCommand(agent, agentServer)) : "";
+    const stopAutostartCommand = agent.ssh ? escapeHtml(buildStopAutostartCommand(agent)) : "";
     const ssh = agent.ssh
       ? `
           <div class="connect">
@@ -106,6 +126,11 @@ async function loadAgents() {
             <div class="command-block">
               <button class="copy" type="button" data-copy="ssh -p ${agent.ssh.port} user@${escapeHtml(host)}">Copy</button>
               <pre class="command"><code>ssh -p ${agent.ssh.port} user@${escapeHtml(host)}</code></pre>
+            </div>
+            <h3>Remove Ubuntu autostart</h3>
+            <div class="command-block">
+              <button class="copy" type="button" data-copy="${stopAutostartCommand}">Copy</button>
+              <pre class="command"><code>${stopAutostartCommand}</code></pre>
             </div>
           </div>
         `
